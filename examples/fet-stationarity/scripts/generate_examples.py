@@ -69,7 +69,7 @@ def build_homog_input_files(order, source_loc, bc, prob_size,
     settings.particles = num_neutrons
 
     # Define entropy mesh
-    entropy_mesh = openmc.Mesh()
+    entropy_mesh = openmc.RegularMesh()
     entropy_mesh.lower_left = [xmin, ymin, zmin]
     entropy_mesh.upper_right = [xmax, ymax, zmax]
     entropy_mesh.dimension = SE_dim
@@ -269,7 +269,7 @@ def get_problem_params(prob_type):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in [3, 4]:
+    if len(sys.argv) != 3:
         print('Usage: generate_examples.py [problem_type] [seed #]')
         sys.exit()
 
