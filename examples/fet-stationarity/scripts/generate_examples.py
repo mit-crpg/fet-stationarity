@@ -1,5 +1,4 @@
 import sys
-import socket
 import os
 
 import openmc
@@ -7,7 +6,7 @@ import openmc
 
 def build_homog_input_files(order, source_loc, bc, prob_size,
                                   num_neutrons, num_batches, SE_dim,
-                                  seed, is_3d, dir):
+                                  seed, dir):
     os.system("mkdir -p {dir}".format(dir=dir))
     os.chdir(dir)
 
@@ -69,7 +68,7 @@ def build_homog_input_files(order, source_loc, bc, prob_size,
     settings.inactive = num_batches - 1
     settings.particles = num_neutrons
 
-    # CHANGE
+    # Define entropy mesh
     entropy_mesh = openmc.Mesh()
     entropy_mesh.lower_left = [xmin, ymin, zmin]
     entropy_mesh.upper_right = [xmax, ymax, zmax]
@@ -83,16 +82,8 @@ def build_homog_input_files(order, source_loc, bc, prob_size,
     nu_fiss_tally.scores = ['nu-fission']
 
     # Create a Legendre polynomial expansion filter and add to tally
-    if not is_3d:
-        expand_filter = openmc.SpatialLegendreFilter(order, 'z', zmin, zmax)
-        nu_fiss_tally.filters.append(expand_filter)
-    else:
-        expand_filter_x = openmc.SpatialLegendreFilter(order, 'x', xmin, xmax)
-        expand_filter_y = openmc.SpatialLegendreFilter(order, 'y', ymin, ymax)
-        expand_filter_z = openmc.SpatialLegendreFilter(order, 'z', zmin, zmax)
-        nu_fiss_tally.filters.append(expand_filter_x)
-        nu_fiss_tally.filters.append(expand_filter_y)
-        nu_fiss_tally.filters.append(expand_filter_z)
+    expand_filter = openmc.SpatialLegendreFilter(order, 'z', zmin, zmax)
+    nu_fiss_tally.filters.append(expand_filter)
 
     tallies = openmc.Tallies([nu_fiss_tally])
     tallies.export_to_xml()
@@ -115,8 +106,6 @@ def get_source_locs(prob_type, prob_size = None):
         '3d-exasmr':
             [(-75.26274, -75.26274, 36.007, 75.26274, 75.26274, 236.0066),
              (0.0, -75.26274, 36.007, 75.26274, 75.26274, 236.0066)],
-        '3d-homog':
-            [(0.,0.,0.)]
     }
 
     if prob_size is None:
@@ -136,70 +125,12 @@ def get_num_batches(prob_type, prob_size = None):
         },
         '2d-beavrs': [499, 999],
         '3d-exasmr': [149, 199],
-        '3d-homog': [499]
     }
 
     if prob_size is None:
         return num_batch_dict[prob_type]
     else:
         return num_batch_dict[prob_type][prob_size[2]]
-
-
-def get_num_nodes(cluster, prob_type, num_neutrons):
-    # TODO Define method as dictionary by getting rid of special case for SK Linux
-    if cluster == 'SK Linux':
-        return 1
-    else:
-        num_node_dict = {
-            '1d-homog': {
-                10000: 5,
-                100000: 5,
-                1000000: 5,
-                10000000: 20
-            },
-            '2d-beavrs': {
-                100000: 10,
-                1000000: 10,
-                4000000: 10,
-                10000000: 15,
-                40000000: 30
-            },
-            '3d-exasmr': {
-                100000: 5,
-                1000000: 15,
-                10000000: 30,
-                40000000: 30
-            },
-            '3d-homog': {
-                10000: 5,
-                100000: 10,
-                1000000: 30
-            }
-        }
-        return num_node_dict[prob_type][num_neutrons]
-
-
-def get_script_name(prob_type, num_neutrons, seed, is_offset, size=None):
-    short_prob_type = prob_type[0:2] + prob_type[3]
-    short_num_neutron_dict = {
-        10000: '10K',
-        100000: '100K',
-        1000000: '1M',
-        4000000: '4M',
-        10000000: '10M',
-        40000000: '40M',
-    }
-    short_num_neutron = short_num_neutron_dict[num_neutrons]
-    if size is not None:
-        script_name = '{}{}{}s{}cm'.format(short_prob_type, short_num_neutron,
-                                           str(seed), str(size))
-    else:
-        script_name = '{}{}{}s'.format(short_prob_type, short_num_neutron,
-                                       str(seed))
-    if is_offset:
-        script_name += 'o'
-
-    return script_name
 
 
 def create_file_from_template(replace_dict, template_path, outfile, dir):
@@ -210,82 +141,6 @@ def create_file_from_template(replace_dict, template_path, outfile, dir):
     with open(outfile, "w") as file:
       file.write(new_file)
     os.system("mv {} {}".format(outfile, dir))
-
-
-def build_pbs_batch_script(ppn, spn, num_nodes, name, dir, run_file,
-                           prob_type, is_inl):
-    num_mpi_procs = num_nodes * spn
-    num_omp_threads = int(ppn / spn)
-
-    replace_dict = {
-        '{procs_per_node}': str(ppn),
-        '{num_nodes}': str(num_nodes),
-        '{filename}': str(name),
-        '{num_mpi_procs}': num_mpi_procs,
-        '{num_omp_threads}': str(num_omp_threads),
-        '{prob_type}': str(prob_type)
-    }
-    if is_inl:
-        template_path = '../../scripts/inl_batch_script_template.qsub'
-    else:
-        template_path = '../../scripts/nse_batch_script_template.qsub'
-    outfile = name + '.pbs'
-    create_file_from_template(replace_dict, template_path, outfile, dir)
-
-    if run_file:
-        os.chdir(dir)
-        # TODO Add some check to see if run command should be issued
-        print("Running job in directory {}".format(dir))
-        os.system('qsub ' + outfile)
-        os.chdir("./..")
-
-
-def build_slurm_batch_script(ppn, spn, num_nodes, name, dir, run_file,
-                             prob_type):
-    num_procs = num_nodes * ppn
-    num_mpi_procs = num_nodes * spn
-    num_omp_threads = int(ppn / spn)
-
-    replace_dict = {
-        '{num_procs}': str(ppn*num_nodes),
-        '{num_nodes}': str(num_nodes),
-        '{filename}': str(name),
-        '{num_mpi_procs}': num_mpi_procs,
-        '{num_omp_threads}': str(num_omp_threads),
-        '{prob_type}': str(prob_type)
-    }
-    template_path = '../../scripts/batch_script_template.slurm'
-    outfile = name + '.slurm'
-    create_file_from_template(replace_dict, template_path, outfile, dir)
-
-    if run_file:
-        os.chdir(dir)
-        # TODO Add some check to see if run command should be issued
-        print("Running job in directory {}".format(dir))
-        os.system('sbatch ' + outfile)
-        os.chdir("./..")
-
-def build_batch_script_files(cluster, prob_type, num_neutrons, name, dir,
-                             run_file):
-    cluster_param_dict = {
-        'SK Linux': {'ppn': 8, 'spn': 1, 'cluster_type': ['pbs', 'slurm']},
-        'NSE Cluster': {'ppn': 12, 'spn': 2, 'cluster_type': ['pbs']},
-        'Green Cluster': {'ppn': 32, 'spn': 2, 'cluster_type': ['slurm']},
-        'INL Cluster': {'ppn': 36, 'spn': 2, 'cluster_type': ['pbs']}
-    }
-    cluster_type = cluster_param_dict[cluster]['cluster_type']
-    ppn = cluster_param_dict[cluster]['ppn']
-    spn = cluster_param_dict[cluster]['spn']
-    num_nodes = get_num_nodes(cluster, prob_type, num_neutrons)
-
-    if 'pbs' in cluster_type:
-        is_inl = cluster == 'INL Cluster'
-        build_pbs_batch_script(ppn, spn, num_nodes, name, dir, run_file,
-                               prob_type, is_inl)
-    if 'slurm' in cluster_type:
-        build_slurm_batch_script(ppn, spn, num_nodes, name, dir, run_file,
-                                 prob_type)
-    os.system('cp ../../scripts/run_openmc_capi.py {}'.format(dir))
 
 
 def build_benchmark_input_files(prob_type, params, dir, num_batch,
@@ -338,13 +193,11 @@ def build_benchmark_input_files(prob_type, params, dir, num_batch,
                                   dir)
 
 
-def generate_input_files(prob_type, seed, cluster, run_file):
-    #TODO get rid of cluster as an input parameter, pass in params
+def generate_input_files(prob_type, seed):
     # Get problem parameters
-    params = get_problem_params(prob_type, cluster)
+    params = get_problem_params(prob_type)
 
-    if prob_type in ['1d-homog', '3d-homog']:
-        is_3d = prob_type == '3d-homog'
+    if prob_type == '1d-homog':
         target_dir = '../{}/seed{}'.format(prob_type, seed)
         os.system('mkdir -p {}'.format(target_dir))
         os.chdir(target_dir)
@@ -354,14 +207,11 @@ def generate_input_files(prob_type, seed, cluster, run_file):
             bc = params['bc']
             SE_dim = params['SE_dim']
             for prob_size in params['prob_sizes']:
-                if not is_3d:
-                    source_locs = get_source_locs(prob_type,
-                                                  prob_size=prob_size)
-                    num_batches = get_num_batches(prob_type,
-                                                  prob_size=prob_size)
-                else:
-                    source_locs = get_source_locs(prob_type)
-                    num_batches = get_num_batches(prob_type)
+                source_locs = get_source_locs(prob_type,
+                                              prob_size=prob_size)
+                num_batches = get_num_batches(prob_type,
+                                              prob_size=prob_size)
+
                 for i in range(len(source_locs)):
                     source_loc = source_locs[i]
                     num_batch = num_batches[i]
@@ -371,11 +221,7 @@ def generate_input_files(prob_type, seed, cluster, run_file):
                     build_homog_input_files(order, source_loc, bc,
                                             prob_size, num_neutrons,
                                             num_batch, SE_dim, seed,
-                                            is_3d, dir)
-                    script_name = get_script_name(prob_type, num_neutrons, seed, i,
-                                                  size=int(prob_size[2]))
-                    build_batch_script_files(cluster, prob_type, num_neutrons,
-                                             script_name, dir, run_file)
+                                            dir)
     else:
         target_dir = '../{}/seed{}'.format(prob_type, seed)
         os.system('mkdir -p {}'.format(target_dir))
@@ -392,132 +238,39 @@ def generate_input_files(prob_type, seed, cluster, run_file):
                     dir += "-offset"
                 build_benchmark_input_files(prob_type, params, dir, num_batch,
                                             num_neutrons, seed, source_loc)
-                script_name = get_script_name(prob_type, num_neutrons, seed, i)
-                build_batch_script_files(cluster, prob_type, num_neutrons,
-                                         script_name, dir, run_file)
 
 
-def get_problem_params(prob_type, cluster):
+def get_problem_params(prob_type):
     problem_param_dict = {
-        'SK Linux': {
-            '1d-homog': {
-                'tally_order': 30,
-                'num_neutrons': [10000, 100000, 1000000, 10000000],
-                'SE_dim': [1, 1, 1000],
-                'bc': ['reflective', 'reflective', 'reflective', 'reflective',
-                       'vacuum', 'vacuum'],
-                'prob_sizes': [(10., 10., 100.), (10., 10., 200.),
-                               (10., 10., 400.), (10., 10., 600.),
-                               (10., 10., 800.)]
-            },
-            '2d-beavrs': {
-                'tally_order': 20,
-                'num_neutrons': [100000, 1000000, 4000000, 10000000, 40000000],
-                'SE_dim': [68, 68, 1]
-            },
-            '3d-exasmr': {
-                'leg_tally_order': 30,
-                'zern_tally_order': 20,
-                'num_neutrons': [100000, 1000000, 10000000, 40000000],
-                'SE_dim': [28, 28, 20]
-            },
-            '3d-homog': {
-                'tally_order': 30,
-                'num_neutrons': [10000, 100000, 1000000],
-                'SE_dim': [16, 16, 16],
-                'bc': ['reflective', 'reflective', 'reflective', 'reflective',
-                       'reflective', 'reflective'],
-                'prob_sizes': [(100., 100., 100.), (200., 200., 200.),
-                               (400., 400., 400.)]
-            }
+        '1d-homog': {
+            'tally_order': 30,
+            'num_neutrons': [10000, 100000, 1000000, 10000000],
+            'SE_dim': [1, 1, 1000],
+            'bc': ['reflective', 'reflective', 'reflective', 'reflective',
+                   'vacuum', 'vacuum'],
+            'prob_sizes': [(10., 10., 100.), (10., 10., 200.),
+                           (10., 10., 400.), (10., 10., 600.),
+                           (10., 10., 800.)]
         },
-        'NSE Cluster': {
-            '1d-homog': {
-                'tally_order': 30,
-                'num_neutrons': [10000, 100000, 1000000],
-                'SE_dim': [1, 1, 1000],
-                'bc': ['reflective', 'reflective', 'reflective', 'reflective',
-                       'vacuum', 'vacuum'],
-                'prob_sizes': [(10., 10., 100.), (10., 10., 200.),
-                               (10., 10., 400.), (10., 10., 600.),
-                               (10., 10., 800.)]
-            }
+        '2d-beavrs': {
+            'tally_order': 20,
+            'num_neutrons': [100000, 1000000, 4000000, 10000000, 40000000],
+            'SE_dim': [68, 68, 1]
         },
-        'Green Cluster': {
-            '2d-beavrs': {
-                'tally_order': 20,
-                'num_neutrons': [100000, 1000000, 4000000],
-                'SE_dim': [68, 68, 1]
-            },
-            '3d-exasmr': {
-                'leg_tally_order': 30,
-                'zern_tally_order': 20,
-                'num_neutrons': [100000],
-                'SE_dim': [28, 28, 20]
-            }
-        },
-        'INL Cluster': {
-            '1d-homog': {
-                'tally_order': 30,
-                'num_neutrons': [10000000],
-                'SE_dim': [1, 1, 1000],
-                'bc': ['reflective', 'reflective', 'reflective', 'reflective',
-                       'vacuum', 'vacuum'],
-                'prob_sizes': [(10., 10., 100.), (10., 10., 200.),
-                               (10., 10., 400.), (10., 10., 600.),
-                               (10., 10., 800.)]
-            },
-            '2d-beavrs': {
-                'tally_order': 20,
-                'num_neutrons': [10000000, 40000000],
-                'SE_dim': [68, 68, 1]
-            },
-            '3d-exasmr': {
-                'leg_tally_order': 30,
-                'zern_tally_order': 20,
-                'num_neutrons': [1000000, 10000000, 40000000],
-                'SE_dim': [28, 28, 20]
-            },
-            '3d-homog': {
-                'tally_order': 30,
-                'num_neutrons': [10000, 100000, 1000000],
-                'SE_dim': [16, 16, 16],
-                'bc': ['reflective', 'reflective', 'reflective', 'reflective',
-                       'reflective', 'reflective'],
-                'prob_sizes': [(100., 100., 100.), (200., 200., 200.),
-                               (400., 400., 400.)]
-            }
+        '3d-exasmr': {
+            'leg_tally_order': 30,
+            'zern_tally_order': 20,
+            'num_neutrons': [100000, 1000000, 10000000, 40000000],
+            'SE_dim': [28, 28, 20]
         }
     }
 
-    if cluster not in problem_param_dict:
-        print('Unexpected cluster {}. Try again.'.format(cluster))
-        sys.exit()
+    return problem_param_dict[prob_type]
 
-    if prob_type not in problem_param_dict[cluster]:
-        print('Unexpected problem type {}. Try again.'.format(prob_type))
-        sys.exit()
-
-    return problem_param_dict[cluster][prob_type]
-
-
-def get_cluster(socket_name):
-    if socket_name.startswith('nsecluster'):
-        return "NSE Cluster"
-    elif socket_name.startswith('eofe'):
-        return "Green Cluster"
-    elif socket_name.startswith('sk-linux'):
-        return "SK Linux"
-    elif socket_name.startswith('falcon'):
-        return "INL Cluster"
-    else:
-        print('Unrecognized socket name')
-        sys.exit()
 
 if __name__ == "__main__":
-    # TODO parse arguments more elegantly
     if len(sys.argv) not in [3, 4]:
-        print('Usage: generate_examples.py [problem_type] [seed #] [-r]')
+        print('Usage: generate_examples.py [problem_type] [seed #]')
         sys.exit()
 
     # Get command line arguments
@@ -527,10 +280,6 @@ if __name__ == "__main__":
     except ValueError:
         print('Seed number must be of type int')
         sys.exit()
-    run_file = len(sys.argv) == 4 and sys.argv[3] == '-r'
-
-    # Get cluster where script is running on
-    cluster = get_cluster(socket.gethostname())
 
     # Generate OpenMC and batch script input files
-    generate_input_files(prob_type, seed, cluster, run_file)
+    generate_input_files(prob_type, seed)
